@@ -1,0 +1,21 @@
+// Cloudflare deploy settings for TideOver.
+// The database (DB) is created automatically on the first deploy. Payment proofs are stored inside it.
+// Secrets are added in the Cloudflare dashboard: GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, and optionally TURNSTILE_SECRET.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tideover",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/auth/*"]
+  },
+  "d1_databases": [{ "binding": "DB", "database_name": "tideover" }],
+  "triggers": { "crons": ["30 0 * * *"] },
+  "vars": {
+    "ADMIN_LOGINS": "randomthingsonlineatsk-cloud",
+    "TURNSTILE_SITEKEY": ""
+  },
+  "observability": { "enabled": true }
+}

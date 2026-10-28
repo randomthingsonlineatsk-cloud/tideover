@@ -1,0 +1,13 @@
+TideOver
+Copyright 2026 Khan Gulrez Shagufa Fazal Ahmed
+ORCID: 0009-0009-6195-0329
+https://github.com/randomthingsonlineatsk-cloud/tideover
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+If you redistribute or adapt TideOver, keep this NOTICE file and the credit
+"Made by Khan Gulrez Shagufa Fazal Ahmed" so the original author stays credited.
+
+Third-party components loaded at run time (not included in this repository):
+- Tesseract.js (Apache License 2.0), loaded from jsDelivr to read bill photos in the browser.
+- IBM Plex Sans, IBM Plex Mono and Source Serif 4 fonts (SIL Open Font License 1.1), from Google Fonts.
+- Cloudflare Turnstile (optional bot check).

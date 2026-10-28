@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TideOver</title>
+<meta name="description" content="TideOver: pay a stranger's essential bill straight to the bill company. The app never touches money. Free, worldwide, open source.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://tideover.randomthingsonlineatsk.workers.dev/">
+<meta property="og:title" content="TideOver: help pay someone's bill, straight to the bill company">
+<meta property="og:description" content="People post a real electricity, gas, water, phone or school bill. Anyone can pay it directly to the company that sent it. TideOver never handles money. Free and open source.">
+<meta property="og:image" content="https://tideover.randomthingsonlineatsk.workers.dev/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="627">
+<meta property="og:image:alt" content="TideOver: help pay someone's bill, straight to the bill company">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="author" content="Khan Gulrez Shagufa Fazal Ahmed">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#155e75">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
+<style>
+/* Layout: one calm reading column. Browse is a grid of bill cards; each bill opens a page with the two
+   steps (claim, then proof). Colour is reserved for status: open, being paid, paid. */
+:root {
+  --ink: #1d2a2f; --ink-2: #4a585d; --ink-3: #7a878b;
+  --paper: #f7f4ee; --sheet: #ffffff; --line: #e3ddd1; --line-2: #cfc7b8;
+  --accent: #155e75; --accent-soft: #e2eef1; --accent-ink: #ffffff;
+  --ok: #2f7a4f; --ok-bg: #e3f2e8; --warn: #9a6a07; --warn-bg: #fbf0d6; --bad: #a8322d; --bad-bg: #f8e5e3;
+  --f-display: "Source Serif 4", Georgia, serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", "Noto Sans", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --ink: #e6ecee; --ink-2: #b2bec2; --ink-3: #85939a; --paper: #12191c; --sheet: #192226; --line: #2a363b; --line-2: #3a484e;
+  --accent: #6cc3d9; --accent-soft: #1b313a; --accent-ink: #0b1a1f;
+  --ok: #7fd3a1; --ok-bg: #18301f; --warn: #e8bd5c; --warn-bg: #362b12; --bad: #f08a84; --bad-bg: #3a1f1e; color-scheme: dark } }
+* { box-sizing: border-box; }
+html, body { background: var(--paper); color: var(--ink); }
+body { font: 15px/1.55 var(--f-body); margin: 0; }
+h1, h2, h3 { font-family: var(--f-display); font-weight: 600; margin: 0; line-height: 1.22; text-wrap: balance; }
+h1 { font-size: 1.85rem; letter-spacing: -.01em; } h2 { font-size: 1.3rem; } h3 { font-size: 1.05rem; }
+p { margin: 0; }
+a { color: var(--accent); }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+.gut { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 30; background: var(--sheet); }
+
+.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--sheet); border-bottom: 1px solid var(--line); }
+.top .in { max-width: 1080px; margin: 0 auto; display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap; padding-block: 10px; }
+.brand { display: flex; align-items: center; gap: 9px; text-decoration: none; color: var(--ink); }
+.brand svg { width: 28px; height: 28px; flex: none; }
+.brand b { font-family: var(--f-display); font-size: 1.3rem; }
+nav.main { display: flex; gap: 2px; flex-wrap: wrap; margin-right: auto; }
+nav.main a { text-decoration: none; color: var(--ink-2); padding: 6px 10px; border-radius: var(--r); }
+nav.main a:hover { background: var(--paper); color: var(--ink); }
+nav.main a[aria-current="page"] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.who { display: flex; gap: 8px; align-items: center; font-size: .9rem; }
+
+.btn { border: 1px solid var(--line-2); background: var(--sheet); border-radius: var(--r); padding: 8px 14px; cursor: pointer; font-weight: 500; text-decoration: none; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+.btn:hover { border-color: var(--ink-3); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--bad); border-color: var(--bad); }
+.btn.sm { padding: 4px 10px; font-size: .86rem; }
+.btn.link { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+main { max-width: 1080px; margin: 0 auto; padding-block: 26px 48px; display: grid; gap: 20px; }
+.lead { display: grid; gap: 8px; max-width: 70ch; }
+.lead p { color: var(--ink-2); font-size: 1.02rem; }
+.kicker { font-family: var(--f-mono); font-size: .74rem; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
+.panel { background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; display: grid; gap: 14px; min-width: 0; }
+.note { font-size: .9rem; color: var(--ink-2); background: var(--paper); border: 1px dashed var(--line-2); border-radius: var(--r); padding: 10px 12px; }
+.note.warn { border-style: solid; border-color: var(--warn); background: var(--warn-bg); color: var(--ink); }
+.note.bad { border-style: solid; border-color: var(--bad); background: var(--bad-bg); color: var(--ink); }
+.note.ok { border-style: solid; border-color: var(--ok); background: var(--ok-bg); color: var(--ink); }
+.muted { color: var(--ink-3); }
+.mono { font-family: var(--f-mono); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.grow { flex: 1 1 auto; }
+
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; align-items: start; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field > span { font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 600; }
+.field small { color: var(--ink-3); font-size: .82rem; }
+input[type=text], input[type=number], input[type=date], input[type=url], input[type=search], select, textarea { border: 1px solid var(--line-2); border-radius: var(--r); padding: 8px 10px; background: var(--sheet); width: 100%; min-width: 0; }
+textarea { resize: vertical; min-height: 70px; }
+.check { display: flex; gap: 8px; align-items: flex-start; }
+.check input { margin-top: 4px; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.card { background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; display: grid; gap: 8px; text-decoration: none; color: inherit; align-content: start; }
+.card:hover { border-color: var(--accent); }
+.card .amt { font-family: var(--f-display); font-size: 1.6rem; font-weight: 600; letter-spacing: -.01em; }
+.card .co { font-weight: 600; }
+.card .say { color: var(--ink-2); font-size: .92rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.meta { font-size: .84rem; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.pill { display: inline-flex; align-items: center; font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 2px 9px; border-radius: 20px; background: var(--paper); color: var(--ink-2); border: 1px solid var(--line); white-space: nowrap; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+.pill.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.pill.bad { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+.pill.acc { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+.two { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.big { font-family: var(--f-display); font-size: 2.2rem; font-weight: 600; letter-spacing: -.01em; }
+dl.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; }
+dl.facts dt { color: var(--ink-3); font-size: .86rem; }
+dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+ol.steps { margin: 0; padding-left: 20px; display: grid; gap: 10px; }
+.acct { font-family: var(--f-mono); font-size: 1.25rem; letter-spacing: .04em; background: var(--paper); border: 1px solid var(--line-2); border-radius: var(--r); padding: 8px 12px; display: inline-block; }
+.preview { max-width: 100%; max-height: 260px; border-radius: var(--r); border: 1px solid var(--line); }
+.found { font-size: .88rem; display: grid; gap: 2px; }
+.found .y { color: var(--ok); } .found .n { color: var(--warn); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r); background: var(--sheet); }
+table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); background: var(--paper); }
+.prose { max-width: 72ch; display: grid; gap: 12px; }
+.prose ul, .prose ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.empty { text-align: center; padding: 36px 16px; color: var(--ink-2); }
+.skel { height: 120px; border-radius: var(--r); background: linear-gradient(90deg, var(--sheet), var(--line), var(--sheet)); background-size: 200% 100%; animation: sh 1.4s infinite; }
+@keyframes sh { to { background-position: -200% 0; } }
+.toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: var(--r); z-index: 50; max-width: calc(100% - 32px); }
+footer { border-top: 1px solid var(--line); background: var(--sheet); color: var(--ink-3); font-size: .84rem; }
+footer .in { max-width: 1080px; margin: 0 auto; padding-block: 16px calc(16px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 6px; }
+footer a { color: var(--ink-2); }
+@media (max-width: 760px) {
+  .two { grid-template-columns: 1fr; }
+  nav.main { order: 3; width: 100%; overflow-x: auto; flex-wrap: nowrap; margin-right: 0; }
+  nav.main a { white-space: nowrap; }
+  h1 { font-size: 1.5rem; }
+  dl.facts { grid-template-columns: 1fr; gap: 2px; } dl.facts dd { margin-bottom: 8px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="in gut">
+    <a class="brand" href="#/" aria-label="TideOver home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M5 19c3 0 3-3 6-3s3 3 6 3 3-3 6-3 3 3 4 3" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round"/><path d="M5 24c3 0 3-3 6-3s3 3 6 3 3-3 6-3 3 3 4 3" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" opacity=".55"/><circle cx="22" cy="10" r="3.2" fill="var(--accent-ink)"/></svg>
+      <b>TideOver</b>
+    </a>
+    <nav class="main" aria-label="Main">
+      <a href="#/" data-v="browse">Help someone</a>
+      <a href="#/ask" data-v="ask">Ask for help</a>
+      <a href="#/directory" data-v="directory">Bill companies</a>
+      <a href="#/about" data-v="about">How it works</a>
+    </nav>
+    <div class="who" id="who"></div>
+  </div>
+</header>
+<main class="gut" id="view" tabindex="-1" aria-live="polite"><div class="skel"></div></main>
+<footer>
+  <div class="in gut">
+    <div>Made by <strong>Khan Gulrez Shagufa Fazal Ahmed</strong> · <a href="https://orcid.org/0009-0009-6195-0329" target="_blank" rel="noopener">ORCID</a> · <a href="https://github.com/randomthingsonlineatsk-cloud/tideover" target="_blank" rel="noopener">Source code (Apache-2.0)</a> · <a href="#/about">Privacy and terms</a></div>
+    <div>TideOver never asks for or handles money. Donors pay the bill company directly. Help given here is a personal gift and is not tax-deductible.</div>
+  </div>
+</footer>
+<script src="app.js" type="module"></script>
+</body>
+</html>
