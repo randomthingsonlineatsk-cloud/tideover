@@ -143,7 +143,12 @@ async function viewBrowse() {
   setNav('browse');
   const q = new URLSearchParams(location.hash.split('?')[1] || '');
   const data = await api(`/api/requests?${q}`);
-  const countries = data.countries.map((c) => [c.country, `${flag(c.country)} ${regionName(c.country)} (${c.n})`]);
+  // Countries with open bills come first (with how many), then every other country.
+  const withBills = new Map(data.countries.map((c) => [c.country, c.n]));
+  const countries = [
+    ...[...withBills].sort((x, y) => regionName(x[0]).localeCompare(regionName(y[0]))).map(([c, n]) => [c, `${flag(c)} ${regionName(c)} (${n} open)`]),
+    ...ISO.filter((c) => !withBills.has(c)).map((c) => [c, regionName(c)]).sort((x, y) => x[1].localeCompare(y[1])).map(([c, nm]) => [c, `${flag(c)} ${nm}`]),
+  ];
   const opt = (pairs, sel, blank) => `<option value="">${blank}</option>` + pairs.map(([k, v]) => `<option value="${esc(k)}"${k === sel ? ' selected' : ''}>${esc(v)}</option>`).join('');
   const cards = data.requests.map((r) => `<a class="card" href="#/r/${r.id}">
       <div class="row"><span class="pill acc">${esc(typeName(r.billType))}</span><span class="grow"></span><span class="muted" style="font-size:.84rem">${flag(r.country)} ${esc(r.city ? `${r.city}, ` : '')}${esc(regionName(r.country))}</span></div>
@@ -159,7 +164,7 @@ async function viewBrowse() {
       <label class="field"><span>Bill type</span><select name="type">${opt(Object.entries(S.cfg.billTypes), q.get('type'), 'All bills')}</select></label>
       <label class="field"><span>Order</span><select name="sort">${opt([['due', 'Due soonest'], ['newest', 'Newest'], ['smallest', 'Smallest amount']], q.get('sort') || 'due', 'Due soonest').replace('<option value="">Due soonest</option>', '')}</select></label>
     </form>
-    ${data.requests.length ? `<div class="cards">${cards}</div>` : `<div class="panel empty"><h2>No open bills right now</h2><p>Every request has been picked up, or none has been posted yet. Check back later, or <a href="#/ask">ask for help with your own bill</a>.</p></div>`}
+    ${data.requests.length ? `<div class="cards">${cards}</div>` : q.get('country') ? `<div class="panel empty"><h2>No open bills in ${esc(regionName(q.get('country')))} right now</h2><p>Nobody there has posted a bill yet. <a href="#/">See all countries</a>, or <a href="#/ask">ask for help with your own bill</a>.</p></div>` : `<div class="panel empty"><h2>No open bills right now</h2><p>Every request has been picked up, or none has been posted yet. Check back later, or <a href="#/ask">ask for help with your own bill</a>.</p></div>`}
     <p class="muted" style="font-size:.86rem">TideOver checks each request automatically, but it cannot prove every bill is genuine. Only ever pay the bill company shown, never a person. <a href="#/about">How the checks work</a>.</p>`;
 }
 function wireBrowse() {
