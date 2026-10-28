@@ -60,7 +60,7 @@ The admin is the GitHub user named in `ADMIN_LOGINS` in `wrangler.jsonc` (curren
 
 ## Adding bill companies
 
-Requests can only be posted for companies in the directory. People can suggest companies. The admin adds them on the **Admin** page, after opening the company's official website and confirming that anyone can pay a bill with only the account number. India starts with 15 companies paid through Bharat BillPay ("Pay bills" in any UPI app).
+People in any country can post a bill. If their company isn't in the directory, they type its name and the bill waits, unseen, on the **Admin** page. **Add** puts the company in the directory and makes its waiting bills live; **Dismiss** closes them (for companies donors can't pay directly). People can also suggest companies. The admin adds them on the **Admin** page, after opening the company's official website and confirming that anyone can pay a bill with only the account number. India starts with 15 companies paid through Bharat BillPay ("Pay bills" in any UPI app).
 
 ## Limits you should know
 

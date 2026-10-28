@@ -249,3 +249,44 @@ test('sign-in state is checked and sessions cannot be forged', async () => {
   assert.equal(bad.status, 400);
   assert.equal((await call(env, 'GET', '/api/me', { cookie: 'to_session=abc|9999999999999.forged' })).data.signedIn, false);
 });
+
+test('any country: a request for an unlisted company waits for the admin, then goes live', async () => {
+  const env = makeEnv();
+  const nia = await signIn(env, 61, 'nia');
+  const obi = await signIn(env, 62, 'obi');
+  const admin = await signIn(env, 9, 'khan-admin');
+  const donor = await signIn(env, 63, 'donor');
+  const body = (over = {}) => goodBill({ companyId: 'new', billType: 'electricity', amount: 40000, newCompany: { name: 'Ikeja Electric', country: 'NG', currency: 'NGN', url: 'https://www.ikejaelectric.com' }, ...over });
+  assert.equal((await call(env, 'POST', '/api/requests', { cookie: nia, body: body({ amount: 100 }) })).data.check, 'amount', 'minimum still applies (about ₹2,000)');
+  assert.equal((await call(env, 'POST', '/api/requests', { cookie: nia, body: body({ newCompany: { name: 'X', country: 'NG', currency: 'NGN' } }) })).data.check, 'company');
+  const a = await call(env, 'POST', '/api/requests', { cookie: nia, body: body() });
+  assert.equal(a.status, 201, JSON.stringify(a.data));
+  assert.equal(a.data.pending, true);
+  const b = await call(env, 'POST', '/api/requests', { cookie: obi, body: body({ account: '4455', imageHash: '1212121212121212', newCompany: { name: 'ikeja electric', country: 'NG', currency: 'NGN' } }) });
+  assert.equal(b.status, 201, JSON.stringify(b.data));
+  assert.equal((await call(env, 'GET', '/api/requests')).data.requests.length, 0, 'waiting requests are not public');
+  assert.equal((await call(env, 'GET', `/api/requests/${a.data.id}`, { cookie: donor })).status, 404);
+  const mine = await call(env, 'GET', `/api/requests/${a.data.id}`, { cookie: nia });
+  assert.equal(mine.data.status, 'pending');
+  assert.equal(mine.data.company.name, 'Ikeja Electric');
+  const ov = (await call(env, 'GET', '/api/admin/overview', { cookie: admin })).data;
+  assert.equal(ov.suggestions.length, 1, 'one suggestion shared by both requests');
+  assert.equal(ov.suggestions[0].waiting, 2);
+  assert.equal(ov.suggestions[0].currency, 'NGN');
+  assert.equal(ov.pending.length, 2);
+  const add = await call(env, 'POST', '/api/admin/companies', { cookie: admin, body: { country: 'NG', name: 'Ikeja Electric', currency: 'NGN', pay_url: 'https://www.ikejaelectric.com/pay', howToPay: 'Pay as a guest with the account number.', billTypes: ['electricity'], suggestion: ov.suggestions[0].id } });
+  assert.equal(add.data.released, 2);
+  const live = (await call(env, 'GET', '/api/requests?country=NG')).data.requests;
+  assert.equal(live.length, 2);
+  assert.equal(live[0].company.name, 'Ikeja Electric');
+  assert.equal((await call(env, 'POST', `/api/requests/${a.data.id}/claim`, { cookie: donor, body: {} })).status, 200);
+
+  // A company that can't be paid directly is dismissed, and the waiting request is closed.
+  const c = await call(env, 'POST', '/api/requests', { cookie: donor, body: body({ account: '9090', imageHash: 'abababababababab', newCompany: { name: 'Cash Only Landlord Ltd', country: 'NG', currency: 'NGN' } }) });
+  const sid = (await call(env, 'GET', '/api/admin/overview', { cookie: admin })).data.suggestions[0].id;
+  const dis = await call(env, 'POST', `/api/admin/suggestions/${sid}`, { cookie: admin });
+  assert.equal(dis.data.rejected, 1);
+  assert.equal((await call(env, 'GET', `/api/requests/${c.data.id}`, { cookie: donor })).data.status, 'rejected');
+  const cfg = await call(env, 'GET', '/api/config');
+  assert.equal(cfg.data.inrPerUnit.NGN, 0.058);
+});

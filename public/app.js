@@ -178,7 +178,7 @@ async function viewRequest(id) {
   setNav('browse');
   let r;
   try { r = await api(`/api/requests/${encodeURIComponent(id)}`); } catch (e) { return `<div class="panel empty"><h2>Not available</h2><p>${esc(e.message)} <a href="#/">See other bills</a>.</p></div>`; }
-  const status = { open: ['Open', 'acc'], claimed: ['Someone is paying it', 'warn'], receipt: ['Paid; waiting for the stamped bill', 'ok'], paid: ['Paid and confirmed', 'ok'], paid_unconfirmed: ['Paid, not confirmed', 'ok'], expired: ['Expired', ''], removed: ['Removed', 'bad'] }[r.status] || [r.status, ''];
+  const status = { open: ['Open', 'acc'], claimed: ['Someone is paying it', 'warn'], receipt: ['Paid; waiting for the stamped bill', 'ok'], paid: ['Paid and confirmed', 'ok'], paid_unconfirmed: ['Paid, not confirmed', 'ok'], expired: ['Expired', ''], removed: ['Removed', 'bad'], pending: ['Waiting for the company check', 'warn'], rejected: ['Company could not be added', 'bad'] }[r.status] || [r.status, ''];
   const facts = `<dl class="facts">
       <dt>Bill company</dt><dd>${esc(r.company?.name)}</dd>
       <dt>Bill type</dt><dd>${esc(typeName(r.billType))}</dd>
@@ -230,8 +230,8 @@ function ownerPanel(r) {
     return `<div class="panel"><span class="kicker">Good news</span><h2>A donor paid your bill</h2><p>Check the receipt, then confirm with a photo of your bill stamped or marked paid. If your bill is electronic, a screenshot of the company's page showing it paid works too. You have ${S.cfg.stampDays} days.</p>${proofLinks(r)}
       <div class="row"><input type="file" id="stampFile" accept="image/*,application/pdf"><button class="btn primary sm" id="sendStamp">Upload stamped bill</button></div></div>`;
   }
-  const msg = { open: 'Your request is live. Donors can see it now.', claimed: 'A donor is paying your bill right now.', paid: 'Paid and confirmed. Thank the donor in your heart; this request will be deleted 30 days after closing.', paid_unconfirmed: 'Closed as paid, not confirmed.', expired: 'This request expired.', removed: 'This request was removed after review.' }[r.status] || '';
-  return `<div class="panel"><span class="kicker">Your request</span><p>${esc(msg)}</p>${proofLinks(r)}${['open', 'expired'].includes(r.status) ? '<div><button class="btn sm danger" id="deleteReq">Delete this request</button></div>' : ''}</div>`;
+  const msg = { open: 'Your request is live. Donors can see it now.', claimed: 'A donor is paying your bill right now.', paid: 'Paid and confirmed. Thank the donor in your heart; this request will be deleted 30 days after closing.', paid_unconfirmed: 'Closed as paid, not confirmed.', expired: 'This request expired.', removed: 'This request was removed after review.', pending: `Your bill is saved but not public yet. ${r.company?.name || 'Your bill company'} is being checked to make sure donors can pay it directly with your account number. Once it is added, your bill goes live automatically.`, rejected: 'Your bill company could not be added, because donors cannot pay it directly with an account number. You can delete this request.' }[r.status] || '';
+  return `<div class="panel"><span class="kicker">Your request</span><p>${esc(msg)}</p>${proofLinks(r)}${['open', 'expired', 'pending', 'rejected'].includes(r.status) ? '<div><button class="btn sm danger" id="deleteReq">Delete this request</button></div>' : ''}</div>`;
 }
 
 function wireRequest(id) {
@@ -273,14 +273,23 @@ async function viewAsk() {
   if (!S.me.signedIn) return intro + signInBlock('Sign in to post a bill.');
   if (S.me.blocked) return intro + `<div class="note bad">This account can no longer post requests.</div>`;
   if (!S.me.accepted) return intro + acceptBlock();
-  const list = await companies();
-  const countries = [...new Set(list.map((c) => c.country))].sort((a, b) => regionName(a).localeCompare(regionName(b)));
+  await companies();
+  const countries = ISO.map((c) => [c, regionName(c)]).sort((a, b) => a[1].localeCompare(b[1]));
+  const currencies = Object.keys(S.cfg.inrPerUnit).sort();
   return `${intro}
   <form class="panel" id="askForm" novalidate>
     <div class="filters">
-      <label class="field"><span>Country</span><select name="country" required><option value="">Choose…</option>${countries.map((c) => `<option value="${c}">${flag(c)} ${esc(regionName(c))}</option>`).join('')}</select><small>Only countries with at least one bill company in the <a href="#/directory">directory</a>. Yours missing? Suggest a company there.</small></label>
+      <label class="field"><span>Country</span><select name="country" required><option value="">Choose…</option>${countries.map(([c, n]) => `<option value="${c}">${flag(c)} ${esc(n)}</option>`).join('')}</select></label>
       <label class="field"><span>Bill company</span><select name="companyId" required disabled><option value="">Choose the country first</option></select></label>
       <label class="field"><span>Bill type</span><select name="billType" required disabled></select></label>
+    </div>
+    <div id="newCo" hidden class="panel" style="background:var(--paper)">
+      <p><strong>Your bill company isn't in the directory yet.</strong> Post your bill anyway: it will wait until the company has been checked, which means confirming that donors can pay it directly with your account number. Usually within a few days.</p>
+      <div class="filters">
+        <label class="field"><span>Company name</span><input type="text" name="ncName" maxlength="120" placeholder="Exactly as printed on the bill"></label>
+        <label class="field"><span>Company website (optional)</span><input type="url" name="ncUrl" placeholder="https://"></label>
+        <label class="field"><span>Currency of the bill</span><select name="ncCurrency">${currencies.map((c) => `<option value="${c}">${c}</option>`).join('')}</select></label>
+      </div>
     </div>
     <div class="field"><span>Photo of the bill</span><input type="file" name="photo" accept="image/*" capture="environment" required><small>Take a straight, well-lit photo of the whole bill. It is read here on your device and is not uploaded or stored.</small></div>
     <div id="readOut" class="found" hidden></div>
@@ -306,22 +315,28 @@ function wireAsk() {
   let getToken = () => '';
   turnstile($('#ts')).then((g) => { getToken = g; });
   const st = { text: '', hash: '', reading: false };
-  const company = () => S.companies.find((c) => c.id === f.companyId.value);
+  const isNew = () => f.companyId.value === 'new';
+  const company = () => isNew() ? { id: 'new', name: f.ncName.value, billTypes: Object.keys(S.cfg.billTypes), currency: f.ncCurrency.value, minimum: localMinimum(f.ncCurrency.value) } : S.companies.find((c) => c.id === f.companyId.value);
+  const showMin = () => { const c = company(); $('#minHint').textContent = c && c.minimum ? `At least ${money(c.minimum, c.currency)} (about ₹${S.cfg.minInr.toLocaleString('en-IN')}).` : ''; };
 
   f.country.onchange = () => {
     const list = S.companies.filter((c) => c.country === f.country.value);
-    f.companyId.innerHTML = `<option value="">Choose…</option>` + list.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-    f.companyId.disabled = !list.length;
+    f.companyId.innerHTML = `<option value="">Choose…</option>` + list.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('') + `<option value="new">My bill company isn't listed</option>`;
+    f.companyId.disabled = !f.country.value;
+    if (CUR[f.country.value]) f.ncCurrency.value = CUR[f.country.value];
     f.billType.innerHTML = ''; f.billType.disabled = true;
+    $('#newCo').hidden = true;
     check();
   };
   f.companyId.onchange = () => {
     const c = company();
+    $('#newCo').hidden = !isNew();
     f.billType.innerHTML = c ? c.billTypes.map((t) => `<option value="${t}">${esc(typeName(t))}</option>`).join('') : '';
     f.billType.disabled = !c;
-    $('#minHint').textContent = c ? `At least ${money(c.minimum, c.currency)} (about ₹${S.cfg.minInr.toLocaleString('en-IN')}).` : '';
+    showMin();
     check();
   };
+  f.ncCurrency.onchange = showMin;
   f.photo.onchange = async () => {
     const file = f.photo.files[0];
     if (!file) return;
@@ -367,12 +382,12 @@ function wireAsk() {
     try {
       if (st.reading) throw new Error('Wait until the bill photo has been read.');
       const body = {
-        companyId: f.companyId.value, billType: f.billType.value, amount: f.amount.value, dueDate: f.dueDate.value, account: f.account.value,
+        companyId: f.companyId.value, newCompany: isNew() ? { name: f.ncName.value, url: f.ncUrl.value, currency: f.ncCurrency.value, country: f.country.value } : undefined, billType: f.billType.value, amount: f.amount.value, dueDate: f.dueDate.value, account: f.account.value,
         displayName: f.displayName.value, city: f.city.value, note: f.note.value, imageHash: st.hash, readAmount: !!r.amt, readCompany: !!r.co, readDue: !!r.due, turnstile: getToken(),
       };
       const res = await api('/api/requests', { method: 'POST', body });
       location.hash = `#/r/${res.id}`;
-      toast('Your bill is posted.');
+      toast(res.pending ? 'Saved. Your bill goes live once the company has been checked.' : 'Your bill is posted.');
     } catch (x) {
       errBox.innerHTML = `<div class="note bad">${esc(x.message)}</div>`;
       if (window.turnstile) try { window.turnstile.reset(); } catch { /* ignore */ }
@@ -388,7 +403,7 @@ async function viewMine() {
   setNav('');
   if (!S.me.signedIn) return signInBlock('Sign in to see your requests and the bills you are paying.');
   const d = await api('/api/mine');
-  const st = (s) => ({ open: 'Open', claimed: 'Being paid', receipt: 'Paid; add stamped bill', paid: 'Paid and confirmed', paid_unconfirmed: 'Paid, not confirmed', expired: 'Expired', removed: 'Removed' }[s] || s);
+  const st = (s) => ({ open: 'Open', claimed: 'Being paid', receipt: 'Paid; add stamped bill', paid: 'Paid and confirmed', paid_unconfirmed: 'Paid, not confirmed', expired: 'Expired', removed: 'Removed', pending: 'Waiting for company check', rejected: 'Company not payable' }[s] || s);
   const reqs = d.requests.map((r) => `<tr><td><a href="#/r/${r.id}">${money(r.amount, r.currency)}</a></td><td>${esc(r.company?.name)}</td><td>${fmtDate(r.dueDate)}</td><td>${esc(st(r.status))}${r.hidden ? ' <span class="pill bad">under review</span>' : ''}</td></tr>`).join('');
   const claims = d.claims.map((c) => `<tr><td><a href="#/r/${c.request}">${money(c.amount, c.currency)}</a></td><td>${esc(c.company)}</td><td>${c.status === 'active' ? 'Pay and upload the receipt' : c.stamped ? 'Confirmed by the person' : c.receipt ? 'Receipt uploaded' : esc(c.status)}</td></tr>`).join('');
   return `<div class="lead"><span class="kicker">My page</span><h1>Hello, ${esc(S.me.login)}</h1></div>
@@ -405,6 +420,16 @@ function wireMine() {
 
 const ISO = 'AD AE AF AG AI AL AM AO AR AS AT AU AW AZ BA BB BD BE BF BG BH BI BJ BM BN BO BR BS BT BW BY BZ CA CD CF CG CH CI CK CL CM CN CO CR CU CV CY CZ DE DJ DK DM DO DZ EC EE EG ER ES ET FI FJ FM FO FR GA GB GD GE GH GI GL GM GN GQ GR GT GU GW GY HK HN HR HT HU ID IE IL IN IQ IR IS IT JM JO JP KE KG KH KI KM KN KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MG MH MK ML MM MN MO MR MT MU MV MW MX MY MZ NA NE NG NI NL NO NP NR NZ OM PA PE PG PH PK PL PR PS PT PW PY QA RO RS RU RW SA SB SC SD SE SG SI SK SL SM SN SO SR SS ST SV SY SZ TD TG TH TJ TL TM TN TO TR TT TV TW TZ UA UG US UY UZ VA VC VE VG VN VU WS YE ZA ZM ZW'.split(' ');
 
+// Usual currency for each country (people can change it if their bill uses another).
+const CUR = Object.fromEntries('IN:INR US:USD GB:GBP AE:AED SA:SAR QA:QAR KW:KWD OM:OMR BH:BHD CA:CAD AU:AUD NZ:NZD SG:SGD MY:MYR TH:THB ID:IDR PH:PHP VN:VND JP:JPY CN:CNY HK:HKD KR:KRW TW:TWD PK:PKR BD:BDT LK:LKR NP:NPR BR:BRL MX:MXN AR:ARS CO:COP CL:CLP PE:PEN ZA:ZAR NG:NGN KE:KES GH:GHS EG:EGP MA:MAD TR:TRY SE:SEK NO:NOK DK:DKK PL:PLN CZ:CZK HU:HUF IL:ILS CH:CHF LI:CHF DE:EUR FR:EUR IT:EUR ES:EUR PT:EUR NL:EUR BE:EUR AT:EUR IE:EUR FI:EUR GR:EUR LU:EUR SK:EUR SI:EUR EE:EUR LV:EUR LT:EUR MT:EUR CY:EUR HR:EUR EC:USD SV:USD PA:USD PR:USD'.split(' ').map((x) => x.split(':')));
+function localMinimum(currency) {
+  const rate = S.cfg?.inrPerUnit?.[currency];
+  if (!rate) return null;
+  const raw = S.cfg.minInr / rate;
+  const step = raw >= 10000 ? 1000 : raw >= 1000 ? 100 : raw >= 100 ? 10 : 1;
+  return Math.ceil(raw / step) * step;
+}
+
 async function viewDirectory() {
   setNav('directory');
   const list = await companies();
@@ -418,7 +443,7 @@ async function viewDirectory() {
       <label class="field"><span>Official website (optional)</span><input type="url" name="url" placeholder="https://"></label></div>
       <label class="field"><span>Anything we should know (optional)</span><input type="text" name="note" maxlength="300" placeholder="For example: anyone can pay with the account number on the website"></label>
       <div><button class="btn primary">Send suggestion</button></div></form>` : `<div class="panel"><p>Missing a company? <a href="/auth/github?next=${encodeURIComponent('/#/directory')}">Sign in</a> to suggest one.</p></div>`;
-  return `<div class="lead"><span class="kicker">Directory</span><h1>Bill companies donors can pay</h1><p>Only companies that accept payments from anyone with the account number are listed. In India, companies are paid through Bharat BillPay in any UPI app's "Pay bills" section.</p></div>${sections || '<div class="panel empty">No companies yet.</div>'}${suggest}`;
+  return `<div class="lead"><span class="kicker">Directory</span><h1>Bill companies donors can pay</h1><p>Only companies that accept payments from anyone with the account number are listed. In India, companies are paid through Bharat BillPay in any UPI app's "Pay bills" section. People in any country can post a bill for a company that isn't listed yet; it goes live once the company has been checked and added.</p></div>${sections || '<div class="panel empty">No companies yet.</div>'}${suggest}`;
 }
 function wireDirectory() {
   const f = $('#suggestForm');
@@ -436,11 +461,11 @@ async function viewAbout() {
   <div class="panel prose">
     <p><strong>${stats.open}</strong> open bills · <strong>${paid}</strong> bills paid so far.</p>
     <h2>For people asking</h2>
-    <ol><li>Sign in, choose your country and the company that sent the bill.</li><li>Photograph the bill. It is read on your own device to check the amount; the photo is not uploaded.</li><li>A donor pays the company directly using your account number.</li><li>You see their receipt, then confirm with a photo of the bill stamped or marked paid.</li></ol>
+    <ol><li>Sign in, choose your country and the company that sent the bill. If it isn't listed, type its name: your bill goes live once the company has been checked.</li><li>Photograph the bill. It is read on your own device to check the amount; the photo is not uploaded.</li><li>A donor pays the company directly using your account number.</li><li>You see their receipt, then confirm with a photo of the bill stamped or marked paid.</li></ol>
     <h2>For donors</h2>
     <ol><li>Pick a bill and click "I'm paying this". It is held for you for ${S.cfg.lockHours} hours.</li><li>Pay the company with the account number shown, through its own payment route.</li><li>Upload the receipt. The person confirms with the stamped bill.</li></ol>
     <h2>The checks, and their limits</h2>
-    <ul><li>Bills can only be posted for companies in the <a href="#/directory">directory</a>, each checked by hand, so payment routes cannot be faked.</li><li>The amount typed must appear on the bill photo; the due date must be within ${60} days ahead or ${90} days overdue; each request must be at least about ₹${S.cfg.minInr.toLocaleString('en-IN')}.</li><li>One open request per person; the same bill or photo cannot be posted twice.</li><li>Three reports from different people hide a request until it is reviewed; two removals block an account.</li><li>These checks reduce fake requests but cannot rule them out. TideOver does not verify identities, and help is never guaranteed.</li></ul>
+    <ul><li>Donors are only ever sent to companies in the <a href="#/directory">directory</a>, each checked by hand, so payment routes cannot be faked. A bill for a company that isn't listed yet waits, unseen, until the company has been checked.</li><li>The amount typed must appear on the bill photo; the due date must be within ${60} days ahead or ${90} days overdue; each request must be at least about ₹${S.cfg.minInr.toLocaleString('en-IN')}.</li><li>One open request per person; the same bill or photo cannot be posted twice.</li><li>Three reports from different people hide a request until it is reviewed; two removals block an account.</li><li>These checks reduce fake requests but cannot rule them out. TideOver does not verify identities, and help is never guaranteed.</li></ul>
     <h2>Privacy</h2>
     <ul><li>Donors see a first name or nickname, city (optional), country, the company, amount, due date and your note. The account number is shown only to the donor who chooses to pay.</li><li>Bill photos are read on your device and never stored. Payment receipts and stamped bills are stored privately, visible only to the person asking, the donor and the admin.</li><li>Requests, proofs and account numbers are deleted 30 days after a request closes; only anonymous counts remain. You can delete your request or your whole account at any time.</li><li>TideOver only receives your GitHub username, not your email or password. No ads, no trackers, no analytics.</li></ul>
     <h2>Terms</h2>
@@ -457,9 +482,10 @@ async function viewAdmin() {
   if (!S.me.admin) return `<div class="panel empty">Admins only.</div>`;
   const d = await api('/api/admin/overview');
   const hidden = d.hidden.map((r) => `<tr><td><a href="#/r/${r.id}">${money(r.amount, r.currency)}</a></td><td>${esc(r.company)}</td><td>${esc(r.display_name)}</td><td>${r.reports}</td></tr>`).join('');
-  const sug = d.suggestions.map((s) => `<tr><td>${flag(s.country)} ${esc(s.country)}</td><td>${esc(s.name)}</td><td>${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url)}</a>` : ''}</td><td>${esc(s.note)}</td><td><button class="btn sm" data-fill='${esc(JSON.stringify({ country: s.country, name: s.name, url: s.url, id: s.id }))}'>Add</button> <button class="btn sm" data-dismiss="${s.id}">Dismiss</button></td></tr>`).join('');
+  const sug = d.suggestions.map((s) => `<tr><td>${flag(s.country)} ${esc(s.country)}</td><td>${esc(s.name)}${s.waiting ? ` <span class="pill warn">${s.waiting} bill${s.waiting > 1 ? 's' : ''} waiting</span>` : ''}</td><td>${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url)}</a>` : ''}</td><td>${esc(s.note)}</td><td><button class="btn sm" data-fill='${esc(JSON.stringify({ country: s.country, name: s.name, url: s.url, id: s.id, currency: s.currency || CUR[s.country] || '' }))}'>Add</button> <button class="btn sm" data-dismiss="${s.id}">Dismiss</button></td></tr>`).join('');
   return `<div class="lead"><span class="kicker">Admin</span><h1>Review</h1><p>${d.counts.map((c) => `${esc(c.status)}: ${c.n}`).join(' · ') || 'No requests yet.'}</p></div>
   <div class="panel"><h2>Hidden after reports</h2>${hidden ? `<div class="tablewrap"><table><thead><tr><th>Amount</th><th>Company</th><th>Name</th><th>Reports</th></tr></thead><tbody>${hidden}</tbody></table></div>` : '<p class="muted">Nothing to review.</p>'}</div>
+  <div class="panel"><h2>Bills waiting for a company check</h2>${d.pending.length ? `<div class="tablewrap"><table><thead><tr><th>Bill</th><th>Country</th><th>Company named</th><th>Website given</th></tr></thead><tbody>${d.pending.map((r) => `<tr><td><a href="#/r/${r.id}">${money(r.amount, r.currency)}</a> · ${esc(typeName(r.bill_type))}</td><td>${flag(r.country)} ${esc(r.country)}</td><td>${esc(r.pending_name)}</td><td>${r.pending_url ? `<a href="${esc(r.pending_url)}" target="_blank" rel="noopener">${esc(r.pending_url)}</a>` : ''}</td></tr>`).join('')}</tbody></table></div><p class="muted" style="font-size:.86rem">Check each company below. "Add" puts it in the directory and makes its waiting bills live; "Dismiss" closes them, for companies donors can't pay directly.</p>` : '<p class="muted">None.</p>'}</div>
   <div class="panel"><h2>Company suggestions</h2>${sug ? `<div class="tablewrap"><table><thead><tr><th>Country</th><th>Name</th><th>Website</th><th>Note</th><th></th></tr></thead><tbody>${sug}</tbody></table></div>` : '<p class="muted">No new suggestions.</p>'}</div>
   <form class="panel" id="coForm"><h2>Add or update a company</h2><p class="muted">Before adding, open the company's official website yourself and check that anyone can pay a bill with only the account number.</p>
     <input type="hidden" name="suggestion">
@@ -475,13 +501,13 @@ async function viewAdmin() {
 function wireAdmin() {
   const f = $('#coForm');
   if (!f) return;
-  $$('[data-fill]').forEach((b) => { b.onclick = () => { const s = JSON.parse(b.dataset.fill); f.country.value = s.country; f.name.value = s.name; f.pay_url.value = s.url || ''; f.suggestion.value = s.id; f.scrollIntoView({ behavior: 'smooth' }); }; });
+  $$('[data-fill]').forEach((b) => { b.onclick = () => { const s = JSON.parse(b.dataset.fill); f.country.value = s.country; f.name.value = s.name; f.pay_url.value = s.url || ''; f.currency.value = s.currency || ''; f.suggestion.value = s.id; f.scrollIntoView({ behavior: 'smooth' }); }; });
   $$('[data-dismiss]').forEach((b) => { b.onclick = async () => { await api(`/api/admin/suggestions/${b.dataset.dismiss}`, { method: 'POST' }); route(); }; });
   f.onsubmit = async (e) => {
     e.preventDefault();
     try {
       const r = await api('/api/admin/companies', { method: 'POST', body: { country: f.country.value.toUpperCase(), name: f.name.value, currency: f.currency.value.toUpperCase(), min_amount: f.min_amount.value || null, pay_url: f.pay_url.value, howToPay: f.howToPay.value, billTypes: $$('input[name=bt]:checked', f).map((x) => x.value), suggestion: f.suggestion.value || undefined } });
-      S.companies = null; toast(`Saved ${r.id}`); route();
+      S.companies = null; toast(`Saved ${r.id}${r.released ? `; ${r.released} waiting bill${r.released > 1 ? 's' : ''} now live` : ''}`); route();
     } catch (x) { toast(x.message); }
   };
   $('#runUpkeep').onclick = async () => { try { const r = await api('/api/admin/upkeep', { method: 'POST' }); toast(`Clean-up: ${JSON.stringify(r)}`); } catch (x) { toast(x.message); } };

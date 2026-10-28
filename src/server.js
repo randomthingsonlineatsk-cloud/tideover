@@ -78,6 +78,10 @@ let schemaReady = false;
 export async function ensureSchema(env) {
   if (schemaReady) return;
   for (const stmt of SCHEMA.split(';').map((s) => s.trim()).filter(Boolean)) await env.DB.prepare(stmt).run();
+  // Columns added after the first release (ALTER fails harmlessly when the column already exists).
+  for (const sql of ['ALTER TABLE requests ADD COLUMN pending_name TEXT', 'ALTER TABLE requests ADD COLUMN pending_url TEXT', 'ALTER TABLE suggestions ADD COLUMN currency TEXT']) {
+    try { await env.DB.prepare(sql).run(); } catch { /* already there */ }
+  }
   const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM companies').first();
   if (!n || !n.n) {
     await env.DB.batch(SEED_COMPANIES.map((c) => env.DB.prepare(
@@ -202,7 +206,8 @@ async function getRequest(env, user, id) {
   if (!r || r.status === 'deleted' || r.status === 'removed') return err(404, 'This request is not available.');
   const isOwner = user && user.id === r.person;
   if (r.hidden && !isOwner && !user?.admin) return err(404, 'This request is under review.');
-  const company = await companyById(env, r.company);
+  if ((r.status === 'pending' || r.status === 'rejected') && !isOwner && !user?.admin) return err(404, 'This request is waiting for its bill company to be checked.');
+  const company = r.status === 'pending' || r.status === 'rejected' ? { id: null, name: r.pending_name, route: 'Waiting to be checked', how_to_pay: '', pay_url: r.pending_url } : await companyById(env, r.company);
   const out = publicRequest(r, company);
   out.howToPay = company?.how_to_pay || '';
   out.payUrl = company?.pay_url || null;
@@ -222,23 +227,50 @@ async function getRequest(env, user, id) {
 async function createRequest(req, env, user) {
   const body = await req.json().catch(() => ({}));
   if (!(await turnstileOk(env, body.turnstile, req.headers.get('CF-Connecting-IP')))) return err(400, 'The bot check failed. Please try again.', { check: 'bot' });
-  const open = await env.DB.prepare(`SELECT id FROM requests WHERE person = ? AND status IN ('open','claimed','receipt')`).bind(user.id).first();
+  const open = await env.DB.prepare(`SELECT id FROM requests WHERE person = ? AND status IN ('open','claimed','receipt','pending')`).bind(user.id).first();
   if (open) return err(400, 'You already have an open request. One request at a time keeps things fair.', { check: 'one-open' });
-  const company = await companyById(env, body.companyId);
+  let company;
+  let pending = null;
+  if (body.companyId === 'new') {
+    // A company that is not in the directory yet: the request waits until the admin checks and adds it.
+    const nc = body.newCompany || {};
+    const name = String(nc.name || '').trim().slice(0, 120);
+    const country = String(nc.country || '').toUpperCase();
+    const url = String(nc.url || '').trim().slice(0, 300);
+    if (!/^[A-Z]{2}$/.test(country)) return err(400, 'Choose your country.', { check: 'company' });
+    if (name.length < 2) return err(400, 'Type the name of the bill company exactly as it appears on the bill.', { check: 'company' });
+    if (url && !/^https?:\/\//i.test(url)) return err(400, "The company's website should start with https://", { check: 'company' });
+    if (!INR_PER_UNIT[nc.currency]) return err(400, 'Choose the currency of the bill.', { check: 'amount' });
+    company = { id: null, country, active: 1, third_party_ok: 1, bill_types: JSON.stringify(Object.keys(BILL_TYPES)), currency: nc.currency, min_amount: null };
+    pending = { name, url, country, currency: nc.currency };
+  } else {
+    company = await companyById(env, body.companyId);
+  }
   const v = validateRequest(body, company, today());
   if (!v.ok) return err(400, v.message, { check: v.check });
   const val = v.value;
-  const dup = await sha256Hex(`${company.id}|${val.account}|${val.amount.toFixed(2)}`);
+  const dup = await sha256Hex(`${company.id || `${pending.country}:${pending.name.toLowerCase()}`}|${val.account}|${val.amount.toFixed(2)}`);
   if (await env.DB.prepare(`SELECT id FROM requests WHERE dup_hash = ? AND status != 'deleted'`).bind(dup).first()) return err(400, 'This bill has already been posted.', { check: 'duplicate' });
   const recent = (await env.DB.prepare(`SELECT img_hash FROM requests WHERE img_hash IS NOT NULL AND created > ?`).bind(addDays(today(), -365)).all()).results;
   if (recent.some((x) => hamming(x.img_hash, val.imageHash) <= 4)) return err(400, 'This bill photo has already been used for a request.', { check: 'duplicate' });
   const id = randomId(8);
-  await env.DB.prepare(`INSERT INTO requests (id, person, company, country, bill_type, amount, currency, due_date, account_enc, dup_hash, img_hash, note, display_name, city, read_company, read_due, status, created)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?)`).bind(
-    id, user.id, company.id, company.country, val.billType, val.amount, val.currency, val.dueDate, await encrypt(secrets(env), val.account), dup, val.imageHash,
-    val.note, val.displayName, val.city, val.readCompany ? 1 : 0, val.readDue ? 1 : 0, nowIso(),
+  let companyRef = company.id;
+  if (pending) {
+    // Reuse an open suggestion for the same company so the admin checks it once.
+    const same = await env.DB.prepare("SELECT id FROM suggestions WHERE status = 'new' AND country = ? AND lower(name) = lower(?)").bind(pending.country, pending.name).first();
+    const sid = same?.id || randomId(8);
+    if (!same) {
+      await env.DB.prepare('INSERT INTO suggestions (id, country, name, url, note, person, created, currency) VALUES (?,?,?,?,?,?,?,?)')
+        .bind(sid, pending.country, pending.name, pending.url, 'From a request waiting for this company', user.id, nowIso(), pending.currency).run();
+    }
+    companyRef = `pending:${sid}`;
+  }
+  await env.DB.prepare(`INSERT INTO requests (id, person, company, country, bill_type, amount, currency, due_date, account_enc, dup_hash, img_hash, note, display_name, city, read_company, read_due, status, created, pending_name, pending_url)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+    id, user.id, companyRef, company.country, val.billType, val.amount, val.currency, val.dueDate, await encrypt(secrets(env), val.account), dup, val.imageHash,
+    val.note, val.displayName, val.city, val.readCompany ? 1 : 0, val.readDue ? 1 : 0, pending ? 'pending' : 'open', nowIso(), pending?.name || null, pending?.url || null,
   ).run();
-  return json({ id }, 201);
+  return json({ id, pending: !!pending }, 201);
 }
 
 async function claimRequest(req, env, user, id) {
@@ -356,7 +388,7 @@ async function mine(env, user) {
   const reqs = (await env.DB.prepare('SELECT r.*, c.name AS c_name, c.route AS c_route FROM requests r LEFT JOIN companies c ON c.id = r.company WHERE r.person = ? ORDER BY r.created DESC').bind(user.id).all()).results;
   const claims = (await env.DB.prepare("SELECT cl.*, r.amount, r.currency, r.bill_type, r.status AS r_status, c.name AS c_name FROM claims cl JOIN requests r ON r.id = cl.request LEFT JOIN companies c ON c.id = r.company WHERE cl.donor = ? AND cl.status != 'released' ORDER BY cl.claimed_at DESC").bind(user.id).all()).results;
   return json({
-    requests: reqs.map((r) => ({ ...publicRequest(r, { id: r.company, name: r.c_name, route: r.c_route }), hidden: !!r.hidden })),
+    requests: reqs.map((r) => ({ ...publicRequest(r, { id: r.company, name: r.c_name || r.pending_name, route: r.c_route || 'Waiting to be checked' }), hidden: !!r.hidden })),
     claims: claims.map((c) => ({ request: c.request, status: c.status, lockUntil: c.lock_until, receipt: !!c.receipt_key, stamped: !!c.stamped_key, amount: c.amount, currency: c.currency, billType: c.bill_type, company: c.c_name, requestStatus: c.r_status })),
   });
 }
@@ -364,9 +396,10 @@ async function mine(env, user) {
 async function adminOverview(env) {
   const hidden = (await env.DB.prepare("SELECT r.id, r.country, r.amount, r.currency, r.bill_type, r.display_name, r.note, r.created, c.name AS company, (SELECT COUNT(*) FROM reports WHERE request = r.id) AS reports FROM requests r LEFT JOIN companies c ON c.id = r.company WHERE r.hidden = 1 AND r.status NOT IN ('removed','deleted')").all()).results;
   const reported = (await env.DB.prepare("SELECT request, COUNT(*) AS n FROM reports GROUP BY request HAVING n > 0").all()).results;
-  const suggestions = (await env.DB.prepare("SELECT * FROM suggestions WHERE status = 'new' ORDER BY created").all()).results;
+  const suggestions = (await env.DB.prepare("SELECT s.*, (SELECT COUNT(*) FROM requests r WHERE r.company = 'pending:' || s.id AND r.status = 'pending') AS waiting FROM suggestions s WHERE s.status = 'new' ORDER BY waiting DESC, created").all()).results;
   const counts = (await env.DB.prepare('SELECT status, COUNT(*) AS n FROM requests GROUP BY status').all()).results;
-  return json({ hidden, reported, suggestions, counts });
+  const pending = (await env.DB.prepare("SELECT id, country, amount, currency, bill_type, pending_name, pending_url, company, created FROM requests WHERE status = 'pending' ORDER BY created").all()).results;
+  return json({ hidden, reported, suggestions, counts, pending });
 }
 
 async function adminAction(req, env, id) {
@@ -396,8 +429,15 @@ async function adminCompany(req, env, user) {
     pay_url=excluded.pay_url, how_to_pay=excluded.how_to_pay, route=excluded.route, third_party_ok=excluded.third_party_ok, checked_by=excluded.checked_by, checked_on=excluded.checked_on, active=excluded.active, min_amount=excluded.min_amount`)
     .bind(id, c.country, c.name.slice(0, 120), JSON.stringify(types), c.currency, c.pay_url || null, String(c.howToPay || '').slice(0, 800), c.route || 'Official website',
       c.thirdPartyOk === false ? 0 : 1, user.login, today(), c.active === false ? 0 : 1, c.min_amount ? Number(c.min_amount) : null).run();
-  if (c.suggestion) await env.DB.prepare("UPDATE suggestions SET status = 'added' WHERE id = ?").bind(c.suggestion).run();
-  return json({ ok: true, id });
+  let released = 0;
+  if (c.suggestion) {
+    await env.DB.prepare("UPDATE suggestions SET status = 'added' WHERE id = ?").bind(c.suggestion).run();
+    // Requests that were waiting for this company go live now, if their currency matches the company's.
+    const res = await env.DB.prepare("UPDATE requests SET company = ?, status = 'open' WHERE company = ? AND status = 'pending' AND currency = ?").bind(id, `pending:${c.suggestion}`, c.currency).run();
+    released = res.meta?.changes || 0;
+    await env.DB.prepare("UPDATE requests SET company = ? WHERE company = ? AND status = 'pending'").bind(id, `pending:${c.suggestion}`).run();
+  }
+  return json({ ok: true, id, released });
 }
 
 // ------------------------------------------------------------------ daily upkeep
@@ -417,7 +457,7 @@ export async function upkeep(env) {
   const waiting = (await env.DB.prepare("SELECT r.* FROM requests r JOIN claims c ON c.request = r.id AND c.status = 'receipt' WHERE r.status = 'receipt' AND c.receipt_at < ?").bind(new Date(Date.now() - STAMP_DAYS * 864e5).toISOString()).all()).results;
   for (const r of waiting) await closeRequest(env, r, 'paid-unconfirmed', 'paid_unconfirmed');
   // Open requests far past their due date expire.
-  const old = (await env.DB.prepare("SELECT * FROM requests WHERE status = 'open' AND due_date < ?").bind(addDays(today(), -OVERDUE_DAYS)).all()).results;
+  const old = (await env.DB.prepare("SELECT * FROM requests WHERE status IN ('open','pending') AND due_date < ?").bind(addDays(today(), -OVERDUE_DAYS)).all()).results;
   for (const r of old) await closeRequest(env, r, 'expired', 'expired');
   // Closed requests are deleted 30 days after closing, proofs included.
   const due = (await env.DB.prepare("SELECT * FROM requests WHERE purge_after IS NOT NULL AND purge_after < ?").bind(now).all()).results;
@@ -450,7 +490,7 @@ export async function handle(req, env) {
     let m;
 
     if (p === '/api/config' && req.method === 'GET') {
-      return json({ turnstileSiteKey: env.TURNSTILE_SITEKEY || '', signIn: !!env.GITHUB_CLIENT_ID, billTypes: BILL_TYPES, minInr: MIN_INR, lockHours: LOCK_HOURS, stampDays: STAMP_DAYS });
+      return json({ turnstileSiteKey: env.TURNSTILE_SITEKEY || '', signIn: !!env.GITHUB_CLIENT_ID, billTypes: BILL_TYPES, minInr: MIN_INR, inrPerUnit: INR_PER_UNIT, lockHours: LOCK_HOURS, stampDays: STAMP_DAYS });
     }
     if (p === '/api/me' && req.method === 'GET') return json(user ? { signedIn: true, login: user.login, accepted: !!user.accepted, admin: user.admin, blocked: !!user.blocked } : { signedIn: false });
     if (p === '/api/me/accept' && req.method === 'POST') {
@@ -507,7 +547,9 @@ export async function handle(req, env) {
     if ((m = p.match(/^\/api\/admin\/suggestions\/([\w-]+)$/)) && req.method === 'POST') {
       const g = need({ admin: true }); if (g) return g;
       await env.DB.prepare("UPDATE suggestions SET status = 'dismissed' WHERE id = ?").bind(m[1]).run();
-      return json({ ok: true });
+      const waiting = (await env.DB.prepare("SELECT * FROM requests WHERE company = ? AND status = 'pending'").bind(`pending:${m[1]}`).all()).results;
+      for (const r of waiting) await closeRequest(env, r, 'company-not-payable', 'rejected');
+      return json({ ok: true, rejected: waiting.length });
     }
     if (p === '/api/admin/upkeep' && req.method === 'POST') { const g = need({ admin: true }); if (g) return g; return json(await upkeep(env)); }
 
